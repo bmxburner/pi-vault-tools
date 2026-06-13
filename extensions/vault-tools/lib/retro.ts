@@ -161,42 +161,64 @@ export function registerWikiRetro(pi: ExtensionAPI): void {
       const root = resolveVaultRoot(process.cwd());
       const paths = getVaultPaths(root);
 
-      if (!existsSync(join(root, ".wiki", "config.json"))) {
+      // If wiki config exists, use the full 4-layer wiki save (raw/ + wiki/ + meta/)
+      if (existsSync(join(root, ".wiki", "config.json"))) {
+        const result = saveInsight(paths, params.slug, params.title, params.body, params.category);
         return {
-          content: [
-            {
-              type: "text",
-              text: "No wiki vault found at this location. Initialize one with wiki_bootstrap first.",
-            },
-          ],
-          details: { error: "no_vault" } as Record<string, unknown>,
-          isError: true,
+          content: [{ type: "text", text: [
+            `🧠 **Insight saved**: ${params.title}`,
+            "",
+            `- Source: \`${result.sourceId}\``,
+            `- Packet: \`${result.packetPath}\``,
+            `- Page: \`${result.sourcePagePath}\``,
+            "",
+            "This insight will be auto-surfaced by wiki_recall in future sessions.",
+          ].join("\n") }],
+          details: { sourceId: result.sourceId, slug: params.slug, title: params.title, category: params.category || null } as Record<string, unknown>,
         };
       }
 
-      const result = saveInsight(paths, params.slug, params.title, params.body, params.category);
+      // Fallback: write to notes/ as a markdown file with frontmatter (Tars vault)
+      const notesDir = join(root, "notes");
+      if (!existsSync(notesDir)) {
+        return { content: [{ type: "text", text: "No wiki or notes directory found at this location." }], details: { error: "no_vault" } as Record<string, unknown>, isError: true };
+      }
+
+      const today = fmtDate();
+      const insDir = join(notesDir, "Insights");
+      mkdirSync(insDir, { recursive: true });
+      const filePath = join(insDir, `${params.slug}.md`);
+
+      const content = [
+        "---",
+        `title: "${params.title}"`,
+        "type: insight",
+        "status: active",
+        `date: ${today}`,
+        `slug: ${params.slug}`,
+        params.category ? `tags: [${params.category}]` : "",
+        "---",
+        "",
+        `# ${params.title}`,
+        "",
+        params.body,
+        "",
+        "---",
+        `*Retro saved: ${today}*`,
+      ].filter((l) => l !== "").join("\n");
+
+      writeFileSync(filePath, content + "\n", "utf-8");
 
       return {
-        content: [
-          {
-            type: "text",
-            text: [
-              `🧠 **Insight saved**: ${params.title}`,
-              "",
-              `- Source: \`${result.sourceId}\``,
-              `- Packet: \`${result.packetPath}\``,
-              `- Page: \`${result.sourcePagePath}\``,
-              "",
-              "This insight will be auto-surfaced by wiki_recall in future sessions.",
-            ].join("\n"),
-          },
-        ],
-        details: {
-          sourceId: result.sourceId,
-          slug: params.slug,
-          title: params.title,
-          category: params.category || null,
-        } as Record<string, unknown>,
+        content: [{ type: "text", text: [
+          `🧠 **Insight saved**: ${params.title}`,
+          "",
+          `- File: \`notes/Insights/${params.slug}.md\``,
+          params.category ? `- Category: ${params.category}` : "",
+          "",
+          "This insight will be auto-surfaced by vault_recall in future sessions.",
+        ].join("\n") }],
+        details: { slug: params.slug, title: params.title, category: params.category || null, path: `notes/Insights/${params.slug}.md` } as Record<string, unknown>,
       };
     },
   });

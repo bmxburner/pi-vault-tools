@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import type { Registry } from "./metadata.js";
-import { type VaultPaths, getVaultPaths, readJson, readText, resolveVaultRoot } from "./utils.js";
+import { type VaultPaths, findVaultPages, getVaultPaths, parseVaultFrontmatter, readJson, readText, resolveVaultRoot } from "./utils.js";
 
 // ─── Public API ────────────────────────────────────────
 
@@ -191,58 +191,82 @@ export function registerWikiRecall(pi: ExtensionAPI): void {
     async execute(_toolCallId, params) {
       const root = resolveVaultRoot(process.cwd());
       const paths = getVaultPaths(root);
+      const maxResults = Math.min(params.max_results ?? 5, 10);
 
-      if (!existsSync(join(root, ".wiki", "config.json"))) {
+      // If wiki config exists, search wiki/ directory
+      if (existsSync(join(root, ".wiki", "config.json"))) {
+        const results = await searchWiki(paths, params.query, maxResults);
+        if (results.length === 0) {
+          return {
+            content: [{ type: "text", text: `No wiki pages found matching "${params.query}". Use wiki_search for broader results.` }],
+            details: { query: params.query, matches: [] } as Record<string, unknown>,
+          };
+        }
         return {
-          content: [
-            {
-              type: "text",
-              text: "No wiki vault found at this location. Initialize one with wiki_bootstrap first.",
-            },
-          ],
+          content: [{ type: "text", text: [
+            `🧠 **${results.length} wiki page(s) relevant** to "${params.query}":`,
+            "",
+            ...results.map((r) => `- [[${r.id}]] — *${r.type}* — ${r.title}${r.preview ? `\n  > ${r.preview.slice(0, 150)}` : ""}`),
+            "",
+            "Use `read` on any page for full content.",
+            "Use `wiki_retro` to save new insights from this task.",
+          ].join("\n") }],
+          details: { query: params.query, matches: results.map((r) => r.id) } as Record<string, unknown>,
+        };
+      }
+
+      // Fallback: search notes/ directory for keyword matches (Tars vault)
+      const notesDir = join(root, "notes");
+      if (!existsSync(notesDir)) {
+        return {
+          content: [{ type: "text", text: "No wiki or notes directory found at this location." }],
           details: { error: "no_vault" } as Record<string, unknown>,
           isError: true,
         };
       }
 
-      const maxResults = Math.min(params.max_results ?? 5, 10);
-      const results = await searchWiki(paths, params.query, maxResults);
+      const { findVaultPages, parseVaultFrontmatter } = await import("./utils.js");
+      const pages = findVaultPages(notesDir);
+      const terms = params.query.toLowerCase().split(/\s+/).filter((t: string) => t.length > 2);
 
-      if (results.length === 0) {
+      const scored = pages
+        .map((page: any) => {
+          const fm = parseVaultFrontmatter(page.content);
+          const title = String(fm.frontmatter.title || "").toLowerCase();
+          let score = 0;
+          for (const term of terms) {
+            if (title.includes(term)) score += 4;
+            if (page.relative.toLowerCase().includes(term)) score += 3;
+            if ((page.content || "").toLowerCase().includes(term)) score += 1;
+          }
+          return { page, score, fm };
+        })
+        .filter((s: any) => s.score > 0)
+        .sort((a: any, b: any) => b.score - a.score)
+        .slice(0, maxResults);
+
+      if (scored.length === 0) {
         return {
-          content: [
-            {
-              type: "text",
-              text: `No wiki pages found matching "${params.query}". Use wiki_search for broader results.`,
-            },
-          ],
+          content: [{ type: "text", text: `No notes found matching "${params.query}" in vault.` }],
           details: { query: params.query, matches: [] } as Record<string, unknown>,
         };
       }
 
       return {
-        content: [
-          {
-            type: "text",
-            text: [
-              `🧠 **${results.length} wiki page(s) relevant** to "${params.query}":`,
-              "",
-              ...results.map(
-                (r) =>
-                  `- [[${r.id}]] — *${r.type}* — ${r.title}${
-                    r.preview ? `\n  > ${r.preview.slice(0, 150)}` : ""
-                  }`,
-              ),
-              "",
-              "Use `read` on any page for full content.",
-              "Use `wiki_retro` to save new insights from this task.",
-            ].join("\n"),
-          },
-        ],
-        details: { query: params.query, matches: results.map((r) => r.id) } as Record<
-          string,
-          unknown
-        >,
+        content: [{ type: "text", text: [
+          `🧠 **${scored.length} vault note(s) relevant** to "${params.query}":`,
+          "",
+          ...scored.map((s: any) => {
+            const title = s.fm.frontmatter.title || s.page.relative.split("/").pop();
+            const type = (s.fm.frontmatter.type as string) || "note";
+            const preview = s.page.content.replace(/^---[\s\S]*?---\n/, "").slice(0, 150).replace(/\n/g, " ");
+            return `- [[${s.page.relative}]] — *${type}* — ${title}${preview ? `\n  > ${preview}` : ""}`;
+          }),
+          "",
+          "Use `read` to view full pages.",
+          "Use `wiki_retro` to save new insights from this task.",
+        ].join("\n") }],
+        details: { query: params.query, matches: scored.map((s: any) => s.page.relative) } as Record<string, unknown>,
       };
     },
   });

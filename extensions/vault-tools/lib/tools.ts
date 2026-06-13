@@ -473,24 +473,25 @@ function buildPageTemplate(
 export function registerWikiSearch(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "vault_search",
-    label: "Wiki Search",
-    description: "Search the wiki registry for pages matching a query.",
-    promptSnippet: "Search the wiki registry for pages",
-    promptGuidelines: ["Use wiki_search to find existing pages before creating duplicates."],
+    label: "Vault Search",
+    description: "Search the vault for pages matching a query. Searches wiki registry first, then falls back to notes/ directory.",
+    promptSnippet: "Search the vault registry for pages",
+    promptGuidelines: ["Use vault_search to find existing pages before creating duplicates."],
     parameters: Type.Object({
       query: Type.String({ description: "Search term" }),
       type: Type.Optional(Type.String({ description: "Filter by page type" })),
     }),
     async execute(_toolCallId, params) {
       const paths = getPaths();
+      const q = params.query.toLowerCase();
+
+      // Try wiki registry first
       const registry = readJson<Registry>(join(paths.meta, "registry.json"), {
         version: "1.0",
         last_updated: "",
         pages: {},
       });
-      const q = params.query.toLowerCase();
-
-      const matches = Object.entries(registry.pages)
+      const registryMatches = Object.entries(registry.pages)
         .filter(([id, entry]) => {
           const matchesQuery =
             id.toLowerCase().includes(q) ||
@@ -502,25 +503,59 @@ export function registerWikiSearch(pi: ExtensionAPI): void {
         })
         .map(([id, entry]) => ({ id, title: entry.title, type: entry.type }));
 
-      if (matches.length === 0) {
+      if (registryMatches.length > 0) {
+        return {
+          content: [{ type: "text", text: [
+            `🔍 **${registryMatches.length} result(s)** for "${params.query}":`,
+            "",
+            ...registryMatches.map((m) => `- [[${m.id}]] — *${m.type}* — ${m.title}`),
+          ].join("\n") }],
+          details: { query: params.query, matches: registryMatches } as Record<string, unknown>,
+        };
+      }
+
+      // Fallback: search notes/ directory (Tars vault)
+      const root = resolveVaultRoot(process.cwd());
+      const notesDir = join(root, "notes");
+      if (!existsSync(notesDir)) {
         return {
           content: [{ type: "text", text: `No pages found for "${params.query}"` }],
           details: { query: params.query, matches: [] } as Record<string, unknown>,
         };
       }
 
+      const { findVaultPages, parseVaultFrontmatter } = await import("./utils.js");
+      const pages = findVaultPages(notesDir);
+
+      const notes = pages
+        .map((page: any) => {
+          const fm = parseVaultFrontmatter(page.content);
+          const title = String(fm.frontmatter.title || page.relative.split("/").pop() || "");
+          const type = (fm.frontmatter.type as string) || "note";
+          const matchesQuery =
+            page.relative.toLowerCase().includes(q) ||
+            title.toLowerCase().includes(q) ||
+            type.toLowerCase().includes(q);
+          const matchesType = !params.type || type.toLowerCase() === params.type.toLowerCase();
+          return matchesQuery && matchesType ? { id: page.relative, title, type } : null;
+        })
+        .filter((m: any): m is { id: string; title: string; type: string } => m !== null)
+        .slice(0, 30);
+
+      if (notes.length === 0) {
+        return {
+          content: [{ type: "text", text: `No notes found for "${params.query}"` }],
+          details: { query: params.query, matches: [] } as Record<string, unknown>,
+        };
+      }
+
       return {
-        content: [
-          {
-            type: "text",
-            text: [
-              `🔍 **${matches.length} result(s)** for "${params.query}":`,
-              "",
-              ...matches.map((m) => `- [[${m.id}]] — *${m.type}* — ${m.title}`),
-            ].join("\n"),
-          },
-        ],
-        details: { query: params.query, matches } as Record<string, unknown>,
+        content: [{ type: "text", text: [
+          `🔍 **${notes.length} note(s)** for "${params.query}":`,
+          "",
+          ...notes.map((m: any) => `- [[${m.id}]] — *${m.type}* — ${m.title}`),
+        ].join("\n") }],
+        details: { query: params.query, matches: notes } as Record<string, unknown>,
       };
     },
   });
@@ -817,15 +852,8 @@ export function registerWikiLogEvent(pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params) {
       const paths = getPaths();
-      const vaultCheck = requireVault(paths);
-      if (!vaultCheck.ok) {
-        return {
-          content: [{ type: "text", text: vaultCheck.reason }],
-          details: { error: vaultCheck.reason } as Record<string, unknown>,
-          isError: true,
-        };
-      }
 
+      // Create meta/ on demand if it doesn't exist (handles Tars vault without .wiki/config.json)
       appendEvent(paths, { kind: params.kind, ...params.details });
 
       // Regenerate log.md

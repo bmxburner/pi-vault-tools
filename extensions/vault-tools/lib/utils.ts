@@ -17,19 +17,47 @@ export interface VaultPaths {
   discoveries: string;
 }
 
-/** Resolve vault root from cwd or find nearest wiki root. */
+/** Resolve vault root:
+ *  1. $VAULT_ROOT env var (machine-specific override)
+ *  2. .wiki/config.json in cwd
+ *  3. Walk up for .wiki/config.json
+ *  4. Walk up for notes/ directory with markdown files
+ *  5. Fallback: cwd
+ */
 export function resolveVaultRoot(cwd: string): string {
-  // If cwd has .wiki/config.json, it's the root
+  // 1. $VAULT_ROOT env var takes precedence (machine-specific override)
+  if (process.env.VAULT_ROOT) return process.env.VAULT_ROOT;
+
+  // 2. If cwd has .wiki/config.json, it's the root
   if (existsSync(join(cwd, ".wiki", "config.json"))) return cwd;
 
-  // Walk up looking for .wiki/config.json
-  let dir = cwd;
-  while (dir !== dirname(dir)) {
-    if (existsSync(join(dir, ".wiki", "config.json"))) return dir;
-    dir = dirname(dir);
+  // 3. Walk up looking for .wiki/config.json
+  {
+    let dir = dirname(cwd);
+    while (dir !== dirname(dir)) {
+      if (existsSync(join(dir, ".wiki", "config.json"))) return dir;
+      dir = dirname(dir);
+    }
   }
 
-  // Fallback: cwd itself
+  // 4. Walk up looking for notes/ with markdown files (vault marker)
+  {
+    let dir = cwd;
+    while (dir !== dirname(dir)) {
+      const notesDir = join(dir, "notes");
+      if (existsSync(notesDir)) {
+        try {
+          const entries = readdirSync(notesDir);
+          if (entries.some((e) => e.endsWith(".md"))) return dir;
+        } catch {
+          // Permission denied or similar — skip
+        }
+      }
+      dir = dirname(dir);
+    }
+  }
+
+  // 5. Fallback: cwd itself
   return cwd;
 }
 
