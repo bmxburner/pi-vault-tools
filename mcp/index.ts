@@ -24,9 +24,13 @@ import * as z from "zod/v4";
 //  Vault root resolution
 // ══════════════════════════════════════════════════════════════
 
-/** Resolve vault root from env or cwd. */
+/** Resolve vault root from env, ~/Tars, or cwd. */
 function vaultRoot(): string {
-  return process.env.VAULT_ROOT || process.env.WIKI_ROOT || process.cwd();
+  if (process.env.VAULT_ROOT) return process.env.VAULT_ROOT;
+  if (process.env.WIKI_ROOT) return process.env.WIKI_ROOT;
+  const homeTars = join(process.env.HOME || "~", "Tars");
+  if (existsSync(join(homeTars, "notes"))) return homeTars;
+  return process.cwd();
 }
 
 // ══════════════════════════════════════════════════════════════

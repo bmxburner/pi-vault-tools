@@ -57,7 +57,13 @@ export function resolveVaultRoot(cwd: string): string {
     }
   }
 
-  // 5. Fallback: cwd itself
+  // 5. Check home directory for ~/Tars (known vault location)
+  const homeTars = join(process.env.HOME || "~", "Tars");
+  if (homeTars !== cwd && existsSync(join(homeTars, "notes"))) {
+    return homeTars;
+  }
+
+  // 6. Fallback: cwd itself
   return cwd;
 }
 
